@@ -1,0 +1,4 @@
+goauthproxy
+*.swp
+ssl/
+goauthproxy.yaml
