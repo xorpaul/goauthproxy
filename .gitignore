@@ -1,4 +1,5 @@
 goauthproxy
 *.swp
+*.zip
 ssl/
 goauthproxy.yaml
