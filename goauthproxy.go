@@ -4,9 +4,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -19,6 +21,7 @@ var requestCounter int
 var forbiddenRequestCounter int
 var failedRequestCounter int
 var config ConfigSettings
+var buildversion string
 
 // configSettings contains the key value pairs from the config file
 type ConfigSettings struct {
@@ -56,11 +59,19 @@ func main() {
 	start = time.Now()
 
 	var (
-		configFile = flag.String("config", "/etc/goauthproxy/config.yaml", "which config file to use at startup, defaults to /etc/goauthproxy/config.yaml")
-		debugFlag  = flag.Bool("debug", false, "log debug output, defaults to false")
+		configFile  = flag.String("config", "/etc/goauthproxy/config.yaml", "which config file to use at startup, defaults to /etc/goauthproxy/config.yaml")
+		debugFlag   = flag.Bool("debug", false, "log debug output, defaults to false")
+		versionFlag = flag.Bool("version", false, "show build time and version number")
 	)
 
 	flag.Parse()
+
+	version := *versionFlag
+
+	if version {
+		fmt.Println("goauthproxy", buildversion, "Build time:", buildtime, "UTC")
+		os.Exit(0)
+	}
 
 	if *debugFlag {
 		h.Debug = true
