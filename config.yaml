@@ -1,9 +1,9 @@
 ---
+debug: true
 listen_address: 127.0.0.1
 listen_port: 8443
 ssl_private_key: ssl/key.pem
 ssl_certificate_file: ssl/cert.pem
-ssl_require_and_verify_client_cert: true
 ssl_client_cert_ca_file: ssl/ca.pem
 
 #requests_trusted_root_cas:
@@ -31,3 +31,10 @@ endpoints:
     http_type: 'POST'
     post_data: |
       {"title": "foo", "body": "bar", "userId": 1} 
+  '/passthrough':
+    url: 'https://jsonplaceholder.typicode.com/posts'
+    pass_through: true
+  '/passthrough_with_proxy':
+    url: 'https://jsonplaceholder.typicode.com/posts'
+    pass_through: true
+    proxy: http://yourproxy:8080
