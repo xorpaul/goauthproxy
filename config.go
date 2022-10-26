@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io/ioutil"
+	"net/url"
 
 	h "github.com/xorpaul/gohelper"
 	"gopkg.in/yaml.v2"
@@ -22,6 +23,14 @@ func readConfigfile(configFile string) ConfigSettings {
 		h.Fatalf("YAML unmarshal error: " + err.Error())
 	}
 
+	for epName, ep := range config.Endpoints {
+		ep.Name = epName
+
+		ep.UrlObject, err = url.Parse(ep.Url)
+		if err != nil {
+			h.Fatalf("Failed to parse endpoint URL " + ep.Url + " from endpoint " + ep.Name + " Error: " + err.Error())
+		}
+	}
 	fmt.Printf("%+v\n", config)
 	return config
 }
