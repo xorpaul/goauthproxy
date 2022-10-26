@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -18,7 +19,6 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 	rid := h.RandSeq()
 	h.Debugf(rid + " Incoming " + method + " request from IP: " + ip)
 	h.Debugf(rid + " Request path: " + r.URL.Path)
-	r.ParseForm()
 
 	if r.URL.Path == "/" {
 		requestCounter++
@@ -68,19 +68,42 @@ func verifyClientCertificate(rid string, epName string, ep endpointSettings, r *
 	}
 }
 
-func issueRequest(rid string, ep endpointSettings, r *http.Request) HttpResult {
-	h.Debugf("sending HTTP request " + ep.Url)
-	req, err := http.NewRequest(ep.HttpType, ep.Url, strings.NewReader(ep.PostData))
-	if err != nil {
-		h.Fatalf("Error while creating " + ep.HttpType + " request to " + ep.Url + " Error: " + err.Error())
-	}
-	req.Header.Add("X-Real-IP", r.RemoteAddr)
-	for headerName, header := range ep.Headers {
-		req.Header.Add(headerName, header)
+func issueRequest(rid string, ep endpointSettings, req *http.Request) HttpResult {
+	h.Debugf(rid + " sending HTTP " + req.Method + " request to " + ep.Url)
+	nReq, err := http.NewRequest(req.Method, ep.Url, nil)
+	if ep.PassThrough {
+		h.Debugf(rid + " allowing request method " + req.Method + " and body pass-through")
+
+		nReq, err = http.NewRequest(req.Method, ep.Url, req.Body)
+		if err != nil {
+			responseBody := "Error while creating " + ep.HttpType + " request to " + ep.Url + " with POST body pass-through Error: " + err.Error()
+			h.Warnf(responseBody)
+			failedRequestCounter++
+			return HttpResult{Code: 503, Body: []byte(responseBody)}
+		}
+	} else {
+		h.Debugf(rid + "using request body configured in endpointsettings")
+
+		nReq, err = http.NewRequest(ep.HttpType, ep.Url, strings.NewReader(ep.PostData))
+		if err != nil {
+			responseBody := "Error while creating " + ep.HttpType + " request to " + ep.Url + " Error: " + err.Error()
+			h.Warnf(responseBody)
+			failedRequestCounter++
+			return HttpResult{Code: 503, Body: []byte(responseBody)}
+		}
+
 	}
 
-	client := setupHttpClient()
-	resp, err := client.Do(req)
+	nReq.Header.Add("X-Real-IP", req.RemoteAddr)
+	nReq.Header.Set("X-Forwarded-Host", req.Header.Get("Host"))
+	for headerName, header := range ep.Headers {
+		nReq.Header.Add(headerName, header)
+	}
+
+	client := setupHttpClient(ep)
+
+	before := time.Now()
+	resp, err := client.Do(nReq)
 	if err != nil {
 		responseBody := "Error while issuing request to " + ep.Url + " Error: " + err.Error()
 		h.Warnf(responseBody)
@@ -96,6 +119,9 @@ func issueRequest(rid string, ep endpointSettings, r *http.Request) HttpResult {
 		return HttpResult{Code: 503, Body: []byte(responseBody)}
 	}
 	//h.Debugf("Received response: " + string(body))
+	// responseSize := fmt.Printf("%.1f", (len(string(body)) / 1024.0))
+	responseSize := float64(len(body)) / 1024.0
+	h.Debugf(rid + " sending HTTP " + req.Method + " request to " + ep.Url + " took " + strconv.FormatFloat(time.Since(before).Seconds(), 'f', 1, 64) + "s with " + strconv.FormatFloat(responseSize, 'f', 1, 64) + " kByte response body")
 
 	return HttpResult{Code: 200, Body: body}
 
@@ -107,7 +133,7 @@ func respond(w http.ResponseWriter, hr HttpResult) {
 
 }
 
-func setupHttpClient() *http.Client {
+func setupHttpClient(ep endpointSettings) *http.Client {
 	// Get the SystemCertPool, continue with an empty pool on error
 	rootCAs, _ := x509.SystemCertPool()
 	if rootCAs == nil {
@@ -133,5 +159,13 @@ func setupHttpClient() *http.Client {
 		RootCAs: rootCAs,
 	}
 	tr := &http.Transport{TLSClientConfig: tlsConfig}
+	if len(ep.Proxy) > 0 {
+		proxy, err := url.Parse(ep.Proxy)
+		if err != nil {
+			h.Fatalf("Failed to parse proxy URL " + ep.Proxy + " from endpoint " + ep.Name + " Error: " + err.Error())
+		}
+		tr.Proxy = http.ProxyURL(proxy)
+
+	}
 	return &http.Client{Transport: tr}
 }
