@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -22,6 +23,7 @@ var requestCounter int
 var forbiddenRequestCounter int
 var failedRequestCounter int
 var config ConfigSettings
+var endpoints map[string]EndpointSettings
 var buildversion string
 
 // configSettings contains the key value pairs from the config file
@@ -35,20 +37,23 @@ type ConfigSettings struct {
 	ClientCertCaFile       string        `yaml:"ssl_client_cert_ca_file"`
 	LogBaseDir             string        `yaml:"log_base_dir"`
 	RequestsTrustedRootCas []string      `yaml:"requests_trusted_root_cas"`
-	Endpoints              map[string]endpointSettings
+	Endpoints              map[string]EndpointSettings
 }
 
-type endpointSettings struct {
-	Name        string
-	AllowedIps  []string `yaml:"allowed_Ips"`
-	AllowedCns  []string `yaml:"allowed_cns"`
-	Url         string   `yaml:"url"`
-	UrlObject   *url.URL
-	Headers     map[string]string `yaml:"headers"`
-	PostData    string            `yaml:"post_data"`
-	HttpType    string            `yaml:"http_type"`
-	PassThrough bool              `yaml:"pass_through"`
-	Proxy       string            `yaml:"proxy"`
+type EndpointSettings struct {
+	Name              string
+	AllowedIps        []string `yaml:"allowed_Ips"`
+	AllowedCns        []string `yaml:"allowed_cns"`
+	Url               string   `yaml:"url"`
+	UrlObject         *url.URL
+	UrlDynamic        bool              `yaml:"url_dynamic"`
+	ArgRegexes        map[string]string `yaml:"argument_regexes"`
+	ArgRegexesObjects map[string]*regexp.Regexp
+	Headers           map[string]string `yaml:"headers"`
+	PostData          string            `yaml:"post_data"`
+	HttpType          string            `yaml:"http_type"`
+	PassThrough       bool              `yaml:"pass_through"`
+	Proxy             string            `yaml:"proxy"`
 }
 
 type HttpResult struct {
