@@ -1,6 +1,6 @@
 # goauthproxy
 
-Simple reverse proxy that supports client certificate verification.
+Simple reverse proxy that supports client certificate verification and dynamic URLs
 
 
 ```
@@ -37,4 +37,22 @@ endpoints:
     http_type: 'POST'
     post_data: |
       {"title": "foo", "body": "bar", "userId": 1} 
+	'/passthrough':
+    url: 'https://jsonplaceholder.typicode.com/posts'
+    pass_through: true
+  '/passthrough_with_proxy':
+    url: 'https://jsonplaceholder.typicode.com/posts'
+    pass_through: true
+    proxy: http://yourproxy:8080
+  '/passthrough_with_dynamic_url':
+    url_dynamic: true
+    url: 'https://jsonplaceholder.typicode.com/posts/{{.Arg1}}'
+    pass_through: true
+    argument_regexes:
+      1: '^\d+$'
 ```
+
+#### example for dynamic URLs
+Calling
+`/passthrough_with_dynamic_url/3`
+would then pass through the request body to `https://jsonplaceholder.typicode.com/posts/3`
