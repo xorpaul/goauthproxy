@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -30,34 +31,39 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for epName, ep := range config.Endpoints {
-		if r.URL.Path == epName {
+	uri := r.URL.Path
+	for epName, ep := range endpoints {
+		ep.Name = epName
+		if strings.Count(r.URL.Path, "/") > 1 {
+			urlParts := strings.Split(r.URL.Path, "/")
+			uri = "/" + urlParts[1]
+		}
+		if uri == epName {
 			requestCounter++
 			h.Debugf(rid + " found endpoint " + epName)
-			if verifyClientCertificate(rid, epName, ep, r) {
+			if verifyClientCertificate(rid, ep, r) {
 				respond(w, issueRequest(rid, ep, r))
 				return
 			} else {
-				respond(w, HttpResult{Code: 403, Body: []byte("No matching client certificate found")})
+				respond(w, HttpResult{Code: 403, Body: []byte("No matching client certificate found for endpoint " + uri)})
 				return
 			}
 		}
 	}
 	forbiddenRequestCounter++
-	response := rid + " no matching endpoint found for " + r.URL.Path
+	response := rid + " no matching endpoint found for " + uri
 	h.Debugf(response)
 	respond(w, HttpResult{Code: 404, Body: []byte(response)})
-	return
 }
 
-func verifyClientCertificate(rid string, epName string, ep endpointSettings, r *http.Request) bool {
+func verifyClientCertificate(rid string, ep EndpointSettings, r *http.Request) bool {
 	if len(ep.AllowedCns) > 0 {
 		for _, peerCertificate := range r.TLS.PeerCertificates {
 			pcs := peerCertificate.Subject.String()
-			h.Debugf(rid + " checking client cert " + pcs + " for endpoint " + epName)
+			h.Debugf(rid + " checking client cert " + pcs + " for endpoint " + ep.Name)
 			for _, cn := range ep.AllowedCns {
 				if pcs == cn {
-					h.Debugf(rid + " found matching client cert " + pcs + " for endpoint " + epName)
+					h.Debugf(rid + " found matching client cert " + pcs + " for endpoint " + ep.Name)
 					return true
 				}
 			}
@@ -68,7 +74,17 @@ func verifyClientCertificate(rid string, epName string, ep endpointSettings, r *
 	}
 }
 
-func issueRequest(rid string, ep endpointSettings, req *http.Request) HttpResult {
+func issueRequest(rid string, ep EndpointSettings, req *http.Request) HttpResult {
+	if ep.UrlDynamic {
+		var err error
+		ep.Url, err = createDynamicUrl(ep, req.URL.Path)
+		if err != nil {
+			responseBody := "Error while creating dynamic url for endpoint " + ep.Name + " Error: " + err.Error()
+			h.Warnf(responseBody)
+			failedRequestCounter++
+			return HttpResult{Code: 503, Body: []byte(responseBody)}
+		}
+	}
 	h.Debugf(rid + " sending HTTP " + req.Method + " request to " + ep.Url)
 	nReq, err := http.NewRequest(req.Method, ep.Url, nil)
 	if ep.PassThrough {
@@ -76,7 +92,7 @@ func issueRequest(rid string, ep endpointSettings, req *http.Request) HttpResult
 
 		nReq, err = http.NewRequest(req.Method, ep.Url, req.Body)
 		if err != nil {
-			responseBody := "Error while creating " + ep.HttpType + " request to " + ep.Url + " with POST body pass-through Error: " + err.Error()
+			responseBody := "Error while creating " + req.Method + " request to " + ep.Url + " with request body pass-through Error: " + err.Error()
 			h.Warnf(responseBody)
 			failedRequestCounter++
 			return HttpResult{Code: 503, Body: []byte(responseBody)}
@@ -133,7 +149,7 @@ func respond(w http.ResponseWriter, hr HttpResult) {
 
 }
 
-func setupHttpClient(ep endpointSettings) *http.Client {
+func setupHttpClient(ep EndpointSettings) *http.Client {
 	// Get the SystemCertPool, continue with an empty pool on error
 	rootCAs, _ := x509.SystemCertPool()
 	if rootCAs == nil {
@@ -168,4 +184,39 @@ func setupHttpClient(ep endpointSettings) *http.Client {
 
 	}
 	return &http.Client{Transport: tr}
+}
+
+func createDynamicUrl(ep EndpointSettings, reqUrl string) (string, error) {
+	urlTemplate := ep.Url
+	h.Debugf("found request URI " + reqUrl)
+	i := 1
+	for {
+		replacementString := "{{.Arg" + strconv.Itoa(i) + "}}"
+		if strings.Contains(urlTemplate, replacementString) {
+			uriParts := strings.Split(reqUrl, "/")
+			// fmt.Printf("%+v\n", uriParts)
+			// fmt.Println(uriParts[1])
+			// fmt.Println(uriParts[2])
+			h.Debugf("uriparts has " + strconv.Itoa(len(uriParts)) + " items")
+			// fmt.Printf("%+v\n", uriParts)
+			if len(uriParts)-2 != i {
+				return "", errors.New("request URI does not have enough arguments for the dynamic URI configured in endpoint, expected " + strconv.Itoa(i) + ", but received " + strconv.Itoa(len(uriParts)-2))
+			}
+			if len(uriParts[i+1]) != 0 {
+				if regex, ok := ep.ArgRegexesObjects["1"]; ok {
+					if !regex.MatchString(uriParts[i+1]) {
+						return "", errors.New("request URI argument number " + strconv.Itoa(i) + " does not match argument regex")
+					}
+				}
+				urlTemplate = strings.ReplaceAll(urlTemplate, replacementString, uriParts[i+1])
+			} else {
+				return "", errors.New("request URI argument number " + strconv.Itoa(i) + " can not be empty")
+			}
+		} else {
+			break
+		}
+		i += 1
+	}
+	url := urlTemplate
+	return url, nil
 }
