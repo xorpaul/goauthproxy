@@ -38,3 +38,9 @@ endpoints:
     url: 'https://jsonplaceholder.typicode.com/posts'
     pass_through: true
     proxy: http://yourproxy:8080
+  '/passthrough_with_dynamic_url':
+    url_dynamic: true
+    url: 'https://jsonplaceholder.typicode.com/posts/{{.Arg1}}'
+    pass_through: true
+    argument_regexes:
+      1: '^\d+$'
