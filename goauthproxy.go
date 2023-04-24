@@ -36,6 +36,7 @@ type ConfigSettings struct {
 	CertificateFile        string        `yaml:"ssl_certificate_file"`
 	ClientCertCaFile       string        `yaml:"ssl_client_cert_ca_file"`
 	LogBaseDir             string        `yaml:"log_base_dir"`
+	CacheBaseDir           string        `yaml:"cache_base_dir"`
 	RequestsTrustedRootCas []string      `yaml:"requests_trusted_root_cas"`
 	Endpoints              map[string]EndpointSettings
 }
@@ -54,11 +55,14 @@ type EndpointSettings struct {
 	HttpType          string            `yaml:"http_type"`
 	PassThrough       bool              `yaml:"pass_through"`
 	Proxy             string            `yaml:"proxy"`
+	CacheTTLString    string            `yaml:"cache_ttl"`
+	CacheTTL          time.Duration
 }
 
 type HttpResult struct {
-	Code int
-	Body []byte
+	Code            int
+	Body            []byte
+	ResponseHeaders map[string]string
 }
 
 func main() {

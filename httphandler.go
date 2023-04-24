@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bufio"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"io/ioutil"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -116,6 +121,55 @@ func issueRequest(rid string, ep EndpointSettings, req *http.Request) HttpResult
 		nReq.Header.Add(headerName, header)
 	}
 
+	// check if response cache exists and should be used
+	cacheFile := ""
+	if len(ep.CacheTTLString) > 0 {
+		hash := sha256.New()
+		hash.Write([]byte(ep.PostData))
+		hashSum := hash.Sum(nil)
+		hashSumString := hex.EncodeToString(hashSum)
+		cacheURI := url.QueryEscape(req.URL.Path)
+		cacheDir, err := h.CheckDirAndCreate(filepath.Join(config.CacheBaseDir, cacheURI), "cachedir")
+		if err != nil {
+			responseBody := "Error while creating cache dir: " + err.Error()
+			h.Warnf(responseBody)
+			failedRequestCounter++
+			return HttpResult{Code: 503, Body: []byte(responseBody)}
+		}
+		cacheFile = filepath.Join(cacheDir, hashSumString)
+		if h.FileExists(cacheFile) {
+			fi, err := os.Stat(cacheFile)
+			if err != nil {
+				responseBody := "Error while reading cached response: " + err.Error()
+				h.Warnf(responseBody)
+				failedRequestCounter++
+				return HttpResult{Code: 503, Body: []byte(responseBody)}
+			}
+			mtime := fi.ModTime()
+			validUntil := mtime.Add(ep.CacheTTL)
+			if !time.Now().After(validUntil) {
+				// cached response is still valid
+				// return cached response
+				h.Debugf("returning cached response for " + req.URL.Path + " from " + cacheFile)
+				cacheContent, err := ioutil.ReadFile(cacheFile)
+				if err != nil {
+					responseBody := "Error while reading cached response: " + err.Error()
+					h.Warnf(responseBody)
+					failedRequestCounter++
+					return HttpResult{Code: 503, Body: []byte(responseBody)}
+				}
+				responseHeader := make(map[string]string)
+				responseHeader["X-Cached-Response-Mtime"] = mtime.String()
+				responseHeader["X-Cached-Response-Valid-Until"] = validUntil.String()
+				return HttpResult{Code: 200, Body: cacheContent, ResponseHeaders: responseHeader}
+
+			} else {
+				h.Debugf("cached response " + cacheFile + " is older that configured cache TTL at " + validUntil.String())
+			}
+
+		}
+	}
+
 	client := setupHttpClient(ep)
 
 	before := time.Now()
@@ -139,12 +193,38 @@ func issueRequest(rid string, ep EndpointSettings, req *http.Request) HttpResult
 	responseSize := float64(len(body)) / 1024.0
 	h.Debugf(rid + " sending HTTP " + req.Method + " request to " + ep.Url + " took " + strconv.FormatFloat(time.Since(before).Seconds(), 'f', 1, 64) + "s with " + strconv.FormatFloat(responseSize, 'f', 1, 64) + " kByte response body")
 
+	if len(ep.CacheTTLString) > 0 {
+		// save response to cache if cache_ttl is set in endpoint settings
+		// always write to file
+		file, err := os.Create(cacheFile)
+		if err != nil {
+			responseBody := "Error while caching response: " + err.Error()
+			h.Warnf(responseBody)
+			failedRequestCounter++
+			return HttpResult{Code: 503, Body: []byte(responseBody)}
+		}
+
+		writer := bufio.NewWriter(file)
+		written, err := writer.Write(body)
+		if err != nil {
+			responseBody := "Error while caching response: " + err.Error()
+			h.Warnf(responseBody)
+			failedRequestCounter++
+			return HttpResult{Code: 503, Body: []byte(responseBody)}
+		}
+		h.Debugf("written " + strconv.Itoa(written) + " cached response for " + req.URL.Path + " from " + cacheFile)
+
+	}
 	return HttpResult{Code: 200, Body: body}
 
 }
 
 func respond(w http.ResponseWriter, hr HttpResult) {
 	w.WriteHeader(hr.Code)
+	for responseHeaderName, responseHeaderValue := range hr.ResponseHeaders {
+		h.Debugf("adding header " + responseHeaderName + " with value: " + responseHeaderValue)
+		w.Header().Set(responseHeaderName, responseHeaderValue)
+	}
 	w.Write(hr.Body)
 
 }
