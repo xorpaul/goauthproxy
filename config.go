@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -45,6 +46,12 @@ func readConfigfile(configFile string) ConfigSettings {
 		Name: "goauthproxy_endpoint_main_error_requests",
 		Help: "The total number of errors for requests for main",
 	})
+	if len(config.CacheBaseDir) > 0 {
+		config.CacheBaseDir, err = h.CheckDirAndCreate(config.CacheBaseDir, "cache base dir")
+		if err != nil {
+			h.Fatalf("Error while trying to create cache_base_dir " + config.CacheBaseDir + " Error: " + err.Error())
+		}
+	}
 
 	endpoints = make(map[string]EndpointSettings)
 	for epName, ep := range config.Endpoints {
@@ -60,7 +67,7 @@ func readConfigfile(configFile string) ConfigSettings {
 			for regexNumber, regex := range ep.ArgRegexes {
 				ep.ArgRegexesObjects[regexNumber], err = regexp.Compile(regex)
 				if err != nil {
-					h.Fatalf("Error while parsing argument regex number " + regexNumber + " Error:" + err.Error())
+					h.Fatalf("Error while parsing endpoint setting " + epName + " argument regex number " + regexNumber + " Error:" + err.Error())
 				}
 			}
 		}
@@ -85,6 +92,15 @@ func readConfigfile(configFile string) ConfigSettings {
 
 		ep.PromCounters = promCounters
 
+		if len(ep.CacheTTLString) > 0 {
+			if len(config.CacheBaseDir) == 0 {
+				h.Fatalf("Error can not set a cache_ttl endpoint setting without setting the general cache_base_dir setting!")
+			}
+			ep.CacheTTL, err = time.ParseDuration(ep.CacheTTLString)
+			if err != nil {
+				h.Fatalf("Error while parsing endpoint setting " + epName + " argument cache_ttl" + ep.CacheTTLString + " Error:" + err.Error())
+			}
+		}
 		// fmt.Printf("%+v\n", ep)
 		endpoints[epName] = ep
 	}

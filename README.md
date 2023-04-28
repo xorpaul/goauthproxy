@@ -37,6 +37,11 @@ endpoints:
     http_type: 'POST'
     post_data: |
       {"title": "foo", "body": "bar", "userId": 1} 
+  '/dynamic_url': # let's you call /dynamic_url/1 which internally requests https://jsonplaceholder.typicode.com/posts/1
+    url_dynamic: true
+    url: 'https://jsonplaceholder.typicode.com/posts/{{.Arg1}}'
+    argument_regexes:
+      1: '^\d+$'
 	'/passthrough':
     url: 'https://jsonplaceholder.typicode.com/posts'
     pass_through: true
