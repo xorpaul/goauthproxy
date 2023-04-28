@@ -210,7 +210,8 @@ func issueRequest(rid string, ep EndpointSettings, req *http.Request) HttpResult
 			failedRequestCounter++
 			return HttpResult{Code: 503, Body: []byte(responseBody)}
 		}
-		h.Debugf("written " + strconv.Itoa(written) + " cached response for " + req.URL.Path + " from " + cacheFile)
+		writer.Flush()
+		h.Debugf("storing " + strconv.Itoa(written) + " cached response from " + req.URL.Path + " to " + cacheFile)
 
 	}
 	return HttpResult{Code: 200, Body: body}
