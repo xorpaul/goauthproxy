@@ -68,7 +68,7 @@ func verifyClientCertificate(rid string, ep EndpointSettings, r *http.Request) (
 						if err != nil {
 							return false, err
 						}
-						fmt.Printf("%+v\n", ocspResp)
+						// fmt.Printf("%+v\n", ocspResp)
 						if ocspResp.Status == 0 {
 							return true, nil
 						}
