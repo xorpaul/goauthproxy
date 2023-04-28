@@ -220,12 +220,13 @@ func issueRequest(rid string, ep EndpointSettings, req *http.Request) HttpResult
 }
 
 func respond(w http.ResponseWriter, hr HttpResult) {
-	w.WriteHeader(hr.Code)
+	w.Header().Set("X-goauthproxy-backend-server", config.Hostname)
 	for responseHeaderName, responseHeaderValue := range hr.ResponseHeaders {
-		h.Debugf("adding header " + responseHeaderName + " with value: " + responseHeaderValue)
+		// h.Debugf("adding header " + responseHeaderName + " with value: " + responseHeaderValue)
 		w.Header().Set(responseHeaderName, responseHeaderValue)
 	}
 	w.Write(hr.Body)
+	w.WriteHeader(hr.Code)
 
 }
 
