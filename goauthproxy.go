@@ -124,6 +124,7 @@ func main() {
 	//Expect and verify client certificate against a CA cert
 	tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
 
+	caCertPool := x509.NewCertPool()
 	for _, clientCAFile := range config.ClientCertCaFiles {
 		if !h.FileExists(clientCAFile) {
 			h.Fatalf("could not find client CA file: " + clientCAFile)
@@ -133,12 +134,11 @@ func main() {
 			if err != nil {
 				h.Fatalf("Error while reading client certificate CA file " + clientCAFile + " Error: " + err.Error())
 			}
-			caCertPool := x509.NewCertPool()
 			caCertPool.AppendCertsFromPEM(caCert)
-			tlsConfig.ClientCAs = caCertPool
 			h.Debugf("Expecting and verifying client certificate against " + clientCAFile)
 		}
 	}
+	tlsConfig.ClientCAs = caCertPool
 
 	server := &http.Server{
 		Addr:      config.ListenAddress + ":" + strconv.Itoa(config.ListenPort),
