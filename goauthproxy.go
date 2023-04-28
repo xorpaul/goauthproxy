@@ -36,8 +36,10 @@ type ConfigSettings struct {
 	CertificateFile        string        `yaml:"ssl_certificate_file"`
 	ClientCertCaFile       string        `yaml:"ssl_client_cert_ca_file"`
 	LogBaseDir             string        `yaml:"log_base_dir"`
+	CacheBaseDir           string        `yaml:"cache_base_dir"`
 	RequestsTrustedRootCas []string      `yaml:"requests_trusted_root_cas"`
 	Endpoints              map[string]EndpointSettings
+	Hostname               string
 }
 
 type EndpointSettings struct {
@@ -54,11 +56,14 @@ type EndpointSettings struct {
 	HttpType          string            `yaml:"http_type"`
 	PassThrough       bool              `yaml:"pass_through"`
 	Proxy             string            `yaml:"proxy"`
+	CacheTTLString    string            `yaml:"cache_ttl"`
+	CacheTTL          time.Duration
 }
 
 type HttpResult struct {
-	Code int
-	Body []byte
+	Code            int
+	Body            []byte
+	ResponseHeaders map[string]string
 }
 
 func main() {
@@ -92,6 +97,12 @@ func main() {
 		h.Debug = true
 		h.Debugf("DEBUG mode set in config file " + *configFile)
 	}
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		h.Fatalf("Error: unable to determine hostname to add to each response as a response header. Error: " + err.Error())
+	}
+	config.Hostname = hostname
 
 	http.HandleFunc("/", httpHandler)
 
