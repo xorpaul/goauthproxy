@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	h "github.com/xorpaul/gohelper"
 )
 
@@ -23,17 +24,21 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 	ip := strings.Split(r.RemoteAddr, ":")[0]
 	method := r.Method
 	rid := h.RandSeq()
-	h.Debugf(rid + " Incoming " + method + " request from IP: " + ip)
-	h.Debugf(rid + " Request path: " + r.URL.Path)
+	// h.Debugf(rid + " Incoming " + method + " request from IP: " + ip)
+	// h.Debugf(rid + " Request path: " + r.URL.Path)
 
 	if r.URL.Path == "/" {
 		requestCounter++
 		response := "uptime=" + strconv.FormatFloat(time.Since(start).Seconds(), 'f', 1, 64) + "s"
 		response += " requests=" + strconv.Itoa(requestCounter)
+		response += " nonexistingrequests=" + strconv.Itoa(nonexistingRequestCounter)
 		response += " forbiddenrequests=" + strconv.Itoa(forbiddenRequestCounter)
 		response += " failedrequests=" + strconv.Itoa(failedRequestCounter)
-		respond(w, HttpResult{Code: 200, Body: []byte(response)})
+		respond(w, HttpResult{Code: 200, Body: []byte(response)}, mainPromCounters)
 		return
+	} else {
+		h.Debugf(rid + " Incoming " + method + " request from IP: " + ip)
+		h.Debugf(rid + " Request path: " + r.URL.Path)
 	}
 
 	uri := r.URL.Path
@@ -44,39 +49,24 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 			uri = "/" + urlParts[1]
 		}
 		if uri == epName {
-			requestCounter++
+			if uri != "/" {
+				requestCounter++
+			}
 			h.Debugf(rid + " found endpoint " + epName)
-			if verifyClientCertificate(rid, ep, r) {
-				respond(w, issueRequest(rid, ep, r))
+			result, err := verifyClientCertificate(rid, ep, r)
+			// fmt.Println("verify client result", result)
+			if err != nil || !result {
+				respond(w, HttpResult{Code: 403, Body: []byte("No matching client certificate found for endpoint " + uri)}, ep.PromCounters)
 				return
 			} else {
-				respond(w, HttpResult{Code: 403, Body: []byte("No matching client certificate found for endpoint " + uri)})
+				respond(w, issueRequest(rid, ep, r), ep.PromCounters)
 				return
 			}
 		}
 	}
-	forbiddenRequestCounter++
 	response := rid + " no matching endpoint found for " + uri
-	h.Debugf(response)
-	respond(w, HttpResult{Code: 404, Body: []byte(response)})
-}
-
-func verifyClientCertificate(rid string, ep EndpointSettings, r *http.Request) bool {
-	if len(ep.AllowedCns) > 0 {
-		for _, peerCertificate := range r.TLS.PeerCertificates {
-			pcs := peerCertificate.Subject.String()
-			h.Debugf(rid + " checking client cert " + pcs + " for endpoint " + ep.Name)
-			for _, cn := range ep.AllowedCns {
-				if pcs == cn {
-					h.Debugf(rid + " found matching client cert " + pcs + " for endpoint " + ep.Name)
-					return true
-				}
-			}
-		}
-		return false
-	} else {
-		return true
-	}
+	// h.Debugf(response)
+	respond(w, HttpResult{Code: 404, Body: []byte(response)}, mainPromCounters)
 }
 
 func issueRequest(rid string, ep EndpointSettings, req *http.Request) HttpResult {
@@ -86,7 +76,6 @@ func issueRequest(rid string, ep EndpointSettings, req *http.Request) HttpResult
 		if err != nil {
 			responseBody := "Error while creating dynamic url for endpoint " + ep.Name + " Error: " + err.Error()
 			h.Warnf(responseBody)
-			failedRequestCounter++
 			return HttpResult{Code: 503, Body: []byte(responseBody)}
 		}
 	}
@@ -99,7 +88,6 @@ func issueRequest(rid string, ep EndpointSettings, req *http.Request) HttpResult
 		if err != nil {
 			responseBody := "Error while creating " + req.Method + " request to " + ep.Url + " with request body pass-through Error: " + err.Error()
 			h.Warnf(responseBody)
-			failedRequestCounter++
 			return HttpResult{Code: 503, Body: []byte(responseBody)}
 		}
 	} else {
@@ -109,7 +97,6 @@ func issueRequest(rid string, ep EndpointSettings, req *http.Request) HttpResult
 		if err != nil {
 			responseBody := "Error while creating " + ep.HttpType + " request to " + ep.Url + " Error: " + err.Error()
 			h.Warnf(responseBody)
-			failedRequestCounter++
 			return HttpResult{Code: 503, Body: []byte(responseBody)}
 		}
 
@@ -177,7 +164,6 @@ func issueRequest(rid string, ep EndpointSettings, req *http.Request) HttpResult
 	if err != nil {
 		responseBody := "Error while issuing request to " + ep.Url + " Error: " + err.Error()
 		h.Warnf(responseBody)
-		failedRequestCounter++
 		return HttpResult{Code: 503, Body: []byte(responseBody)}
 	}
 	defer resp.Body.Close()
@@ -185,7 +171,6 @@ func issueRequest(rid string, ep EndpointSettings, req *http.Request) HttpResult
 	if err != nil {
 		responseBody := "Error while reading response body: " + err.Error()
 		h.Warnf(responseBody)
-		failedRequestCounter++
 		return HttpResult{Code: 503, Body: []byte(responseBody)}
 	}
 	//h.Debugf("Received response: " + string(body))
@@ -219,11 +204,32 @@ func issueRequest(rid string, ep EndpointSettings, req *http.Request) HttpResult
 
 }
 
-func respond(w http.ResponseWriter, hr HttpResult) {
+func respond(w http.ResponseWriter, hr HttpResult, pc map[string]prometheus.Counter) {
 	w.Header().Set("X-goauthproxy-backend-server", config.Hostname)
 	for responseHeaderName, responseHeaderValue := range hr.ResponseHeaders {
 		// h.Debugf("adding header " + responseHeaderName + " with value: " + responseHeaderValue)
 		w.Header().Set(responseHeaderName, responseHeaderValue)
+	}
+	if hr.Code == 200 {
+		mutex.Lock()
+		requestCounter++
+		pc["successful"].Inc()
+		mutex.Unlock()
+	} else if hr.Code == 404 {
+		mutex.Lock()
+		nonexistingRequestCounter++
+		pc["nonexisting"].Inc()
+		mutex.Unlock()
+	} else if hr.Code == 403 {
+		mutex.Lock()
+		forbiddenRequestCounter++
+		pc["forbidden"].Inc()
+		mutex.Unlock()
+	} else if hr.Code == 503 {
+		mutex.Lock()
+		failedRequestCounter++
+		pc["error"].Inc()
+		mutex.Unlock()
 	}
 	w.Write(hr.Body)
 	w.WriteHeader(hr.Code)
