@@ -46,3 +46,11 @@ endpoints:
     pass_through: true
     argument_regexes:
       1: '^\d+$'
+  '/dynamic_req_data':
+    req_data_dynamic: true
+    url: 'https://jsonplaceholder.typicode.com/posts'
+    argument_regexes:
+      1: '^[^/ ]+$'
+    http_type: 'POST'
+    post_data: |
+      {"title": "{{.Arg1}}", "body": "bar", "userId": 1} 

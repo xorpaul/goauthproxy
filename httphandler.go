@@ -93,7 +93,20 @@ func issueRequest(rid string, ep EndpointSettings, req *http.Request) HttpResult
 	} else {
 		h.Debugf(rid + "using request body configured in endpointsettings")
 
-		nReq, err = http.NewRequest(ep.HttpType, ep.Url, strings.NewReader(ep.PostData))
+		reqData := ep.PostData
+		if ep.ReqDataDynamic {
+			reqData, err = createDynamicReqData(ep, req.URL.Path, ep.PostData)
+			if err != nil {
+				responseBody := "Error while trying to create dynamic request data for URI " + ep.Url + " Error: " + err.Error()
+				h.Warnf(responseBody)
+				return HttpResult{Code: 503, Body: []byte(responseBody)}
+			}
+		}
+		h.Debugf("sending " + ep.HttpType + " to " + ep.Url + " with request data: " + reqData)
+		// TODO: maybe make this a toogle via a endpoint setting
+		// reqData = url.QueryEscape(reqData)
+		// h.Debugf("sending " + ep.HttpType + " to " + ep.Url + " with url encoded request data: " + reqData)
+		nReq, err = http.NewRequest(ep.HttpType, ep.Url, strings.NewReader(reqData))
 		if err != nil {
 			responseBody := "Error while creating " + ep.HttpType + " request to " + ep.Url + " Error: " + err.Error()
 			h.Warnf(responseBody)
@@ -306,4 +319,36 @@ func createDynamicUrl(ep EndpointSettings, reqUrl string) (string, error) {
 	}
 	url := urlTemplate
 	return url, nil
+}
+
+func createDynamicReqData(ep EndpointSettings, reqUrl string, reqData string) (string, error) {
+	i := 1
+	for {
+		replacementString := "{{.Arg" + strconv.Itoa(i) + "}}"
+		if strings.Contains(reqData, replacementString) {
+			uriParts := strings.Split(reqUrl, "/")
+			// fmt.Printf("%+v\n", uriParts)
+			// fmt.Println(uriParts[1])
+			// fmt.Println(uriParts[2])
+			h.Debugf("uriparts has " + strconv.Itoa(len(uriParts)) + " items")
+			// fmt.Printf("%+v\n", uriParts)
+			if len(uriParts)-2 != i {
+				return "", errors.New("request URI does not have enough arguments for the dynamic request data configured in endpoint, expected " + strconv.Itoa(i) + ", but received " + strconv.Itoa(len(uriParts)-2))
+			}
+			if len(uriParts[i+1]) != 0 {
+				if regex, ok := ep.ArgRegexesObjects["1"]; ok {
+					if !regex.MatchString(uriParts[i+1]) {
+						return "", errors.New("request URI argument number " + strconv.Itoa(i) + " does not match argument regex")
+					}
+				}
+				reqData = strings.ReplaceAll(reqData, replacementString, uriParts[i+1])
+			} else {
+				return "", errors.New("request URI argument number " + strconv.Itoa(i) + " can not be empty")
+			}
+		} else {
+			break
+		}
+		i += 1
+	}
+	return reqData, nil
 }

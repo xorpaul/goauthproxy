@@ -58,6 +58,7 @@ type EndpointSettings struct {
 	Url                       string   `yaml:"url"`
 	UrlObject                 *url.URL
 	UrlDynamic                bool              `yaml:"url_dynamic"`
+	ReqDataDynamic            bool              `yaml:"req_data_dynamic"`
 	ArgRegexes                map[string]string `yaml:"argument_regexes"`
 	ArgRegexesObjects         map[string]*regexp.Regexp
 	Headers                   map[string]string `yaml:"headers"`
