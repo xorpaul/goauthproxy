@@ -4,7 +4,9 @@ listen_address: 127.0.0.1
 listen_port: 8443
 ssl_private_key: ssl/key.pem
 ssl_certificate_file: ssl/cert.pem
-ssl_client_cert_ca_file: ssl/ca.pem
+ssl_client_cert_ca_files:
+  - ssl/pukimgmtca2.crt
+  - ssl/pukiissuingca3.pem
 
 #requests_trusted_root_cas:
 #  - 'ssl/rootca.pem'
@@ -23,8 +25,8 @@ endpoints:
     headers:
       'Content-Type': 'application/json'
   '/protected':
-    allowed_cns:
-      - 'CN=COMMON_NAME'
+    allowed_distinguishednames:
+      - 'CN=andpaul,O=PUKI Client Certificate,0.9.2342.19200300.100.1.1=#13083231343230343031'
     url: 'https://jsonplaceholder.typicode.com/posts'
     headers:
       'Content-Type': 'application/json; charset=UTF-8'
