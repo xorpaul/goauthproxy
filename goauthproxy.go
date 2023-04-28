@@ -12,19 +12,27 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	h "github.com/xorpaul/gohelper"
 )
 
-var start time.Time
-var buildtime string
-var requestCounter int
-var forbiddenRequestCounter int
-var failedRequestCounter int
-var config ConfigSettings
-var endpoints map[string]EndpointSettings
-var buildversion string
+var (
+	start                     time.Time
+	buildtime                 string
+	requestCounter            int
+	forbiddenRequestCounter   int
+	failedRequestCounter      int
+	nonexistingRequestCounter int
+	config                    ConfigSettings
+	mainPromCounters          map[string]prometheus.Counter
+	endpoints                 map[string]EndpointSettings
+	mutex                     sync.Mutex
+	buildversion              string
+)
 
 // configSettings contains the key value pairs from the config file
 type ConfigSettings struct {
@@ -34,26 +42,28 @@ type ConfigSettings struct {
 	ListenPort             int           `yaml:"listen_port"`
 	PrivateKey             string        `yaml:"ssl_private_key"`
 	CertificateFile        string        `yaml:"ssl_certificate_file"`
-	ClientCertCaFile       string        `yaml:"ssl_client_cert_ca_file"`
-	LogBaseDir             string        `yaml:"log_base_dir"`
-	RequestsTrustedRootCas []string      `yaml:"requests_trusted_root_cas"`
+	ClientCertCaFiles      []string      `yaml:"ssl_client_cert_ca_files"`
+	ClientCertCas          []*x509.Certificate
+	LogBaseDir             string   `yaml:"log_base_dir"`
+	RequestsTrustedRootCas []string `yaml:"requests_trusted_root_cas"`
 	Endpoints              map[string]EndpointSettings
 }
 
 type EndpointSettings struct {
-	Name              string
-	AllowedIps        []string `yaml:"allowed_Ips"`
-	AllowedCns        []string `yaml:"allowed_cns"`
-	Url               string   `yaml:"url"`
-	UrlObject         *url.URL
-	UrlDynamic        bool              `yaml:"url_dynamic"`
-	ArgRegexes        map[string]string `yaml:"argument_regexes"`
-	ArgRegexesObjects map[string]*regexp.Regexp
-	Headers           map[string]string `yaml:"headers"`
-	PostData          string            `yaml:"post_data"`
-	HttpType          string            `yaml:"http_type"`
-	PassThrough       bool              `yaml:"pass_through"`
-	Proxy             string            `yaml:"proxy"`
+	Name                      string
+	AllowedIps                []string `yaml:"allowed_ips"`
+	AllowedDistinguishedNames []string `yaml:"allowed_distinguishednames"`
+	Url                       string   `yaml:"url"`
+	UrlObject                 *url.URL
+	UrlDynamic                bool              `yaml:"url_dynamic"`
+	ArgRegexes                map[string]string `yaml:"argument_regexes"`
+	ArgRegexesObjects         map[string]*regexp.Regexp
+	Headers                   map[string]string `yaml:"headers"`
+	PostData                  string            `yaml:"post_data"`
+	HttpType                  string            `yaml:"http_type"`
+	PassThrough               bool              `yaml:"pass_through"`
+	Proxy                     string            `yaml:"proxy"`
+	PromCounters              map[string]prometheus.Counter
 }
 
 type HttpResult struct {
@@ -103,22 +113,20 @@ func main() {
 	//Expect and verify client certificate against a CA cert
 	tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
 
-	if len(config.ClientCertCaFile) > 1 {
-		if !h.FileExists(config.ClientCertCaFile) {
-			h.Fatalf("could not find client CA file: " + config.ClientCertCaFile)
+	for _, clientCAFile := range config.ClientCertCaFiles {
+		if !h.FileExists(clientCAFile) {
+			h.Fatalf("could not find client CA file: " + clientCAFile)
 		} else {
 			// Load CA cert
-			caCert, err := ioutil.ReadFile(config.ClientCertCaFile)
+			caCert, err := ioutil.ReadFile(clientCAFile)
 			if err != nil {
-				h.Fatalf("Error while reading client certificate CA file " + config.ClientCertCaFile + " Error: " + err.Error())
+				h.Fatalf("Error while reading client certificate CA file " + clientCAFile + " Error: " + err.Error())
 			}
 			caCertPool := x509.NewCertPool()
 			caCertPool.AppendCertsFromPEM(caCert)
 			tlsConfig.ClientCAs = caCertPool
-			h.Debugf("Expecting and verifying client certificate against " + config.ClientCertCaFile)
+			h.Debugf("Expecting and verifying client certificate against " + clientCAFile)
 		}
-	} else {
-		h.Fatalf("A client certificate CA file needs to be specified if client certificate verification is enabled")
 	}
 
 	server := &http.Server{
@@ -127,7 +135,15 @@ func main() {
 	}
 
 	log.Print("Listening on https://" + config.ListenAddress + ":" + strconv.Itoa(config.ListenPort) + "/")
-	if err := server.ListenAndServeTLS(config.CertificateFile, config.PrivateKey); err != nil {
-		log.Fatal(err)
-	}
+	go func() {
+		if err := server.ListenAndServeTLS(config.CertificateFile, config.PrivateKey); err != nil {
+			log.Fatal(err)
+		}
+	}()
+
+	// prometheus metrics server
+	http.Handle("/metrics", promhttp.Handler())
+	http.ListenAndServe("127.0.0.1:2112", nil)
+
+	select {}
 }
