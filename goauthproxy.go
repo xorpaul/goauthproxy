@@ -39,6 +39,7 @@ type ConfigSettings struct {
 	CacheBaseDir           string        `yaml:"cache_base_dir"`
 	RequestsTrustedRootCas []string      `yaml:"requests_trusted_root_cas"`
 	Endpoints              map[string]EndpointSettings
+	Hostname               string
 }
 
 type EndpointSettings struct {
@@ -96,6 +97,12 @@ func main() {
 		h.Debug = true
 		h.Debugf("DEBUG mode set in config file " + *configFile)
 	}
+
+	hostname, err := os.Hostname()
+	if err != nil {
+		h.Fatalf("Error: unable to determine hostname to add to each response as a response header. Error: " + err.Error())
+	}
+	config.Hostname = hostname
 
 	http.HandleFunc("/", httpHandler)
 
