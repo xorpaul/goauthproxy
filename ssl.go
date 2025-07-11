@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	h "github.com/xorpaul/gohelper"
 	"golang.org/x/crypto/ocsp"
@@ -133,14 +135,32 @@ func verifyClientCertificate(rid string, ep EndpointSettings, r *http.Request, c
 				h.Debugf(rid + " Client certificate issuer: " + clientCertIssuer)
 				h.Debugf(rid + " Searching for matching issuer among " + fmt.Sprintf("%d", len(config.ClientCertCas)) + " configured client CA certificate(s)")
 
+				// Parse the client cert issuer for normalized comparison
+				clientIssuerName, err := parseDistinguishedName(clientCertIssuer)
+				if err != nil {
+					h.Debugf(rid + " Failed to parse client certificate issuer DN: " + err.Error())
+					return false, fmt.Errorf("failed to parse client certificate issuer DN: %s", err.Error())
+				}
+				h.Debugf(rid + " Normalized client certificate issuer: " + clientIssuerName.String())
+
 				var matchingCA *x509.Certificate = nil
 				var matchingCAIndex int = -1
+
+				// clientCertIssuer = /C=DE/O=IONOS SE/OU=puki-admin at ionos.com/CN=PUKI Issuing CA 2022 EC
+				// clientCAFile.Subject.String() = CN=PUKI Issuing CA 2022 EC,OU=puki-admin at ionos.com,O=IONOS SE,C=DE
 
 				for k, clientCAFile := range config.ClientCertCas {
 					clientCAIssuer := clientCAFile.Subject.String()
 					h.Debugf(rid + " Comparing against CA " + fmt.Sprintf("%d", k+1) + "/" + fmt.Sprintf("%d", len(config.ClientCertCas)) + ": " + clientCAIssuer)
+					
+					// Also show the normalized form for debugging
+					caIssuerName, err := parseDistinguishedName(clientCAIssuer)
+					if err == nil {
+						h.Debugf(rid + " Normalized CA issuer: " + caIssuerName.String())
+					}
 
-					if clientCertIssuer == clientCAIssuer {
+					// Use the new DN comparison function to handle different formats
+					if compareDistinguishedNames(clientCertIssuer, clientCAIssuer) {
 						h.Debugf(rid + " MATCH: Found matching issuer CA " + fmt.Sprintf("%d", k+1) + " for client certificate " + cc.DistinguishedName)
 						matchingCA = clientCAFile
 						matchingCAIndex = k + 1
@@ -195,4 +215,62 @@ func verifyClientCertificate(rid string, ep EndpointSettings, r *http.Request, c
 		h.Debugf(rid + " No distinguished names configured for endpoint " + ep.Name + " - allowing all requests with valid client certificates")
 		return true, nil
 	}
+}
+
+// parseDistinguishedName parses a DN string into a pkix.Name for proper comparison
+func parseDistinguishedName(dn string) (*pkix.Name, error) {
+	// Handle both formats: "/C=DE/O=IONOS SE/..." and "CN=...,OU=...,O=...,C=DE"
+	var parts []string
+	if strings.HasPrefix(dn, "/") {
+		// Slash-separated format: /C=DE/O=IONOS SE/OU=puki-admin at ionos.com/CN=PUKI Issuing CA 2022 EC
+		parts = strings.Split(dn[1:], "/") // Remove leading slash and split
+	} else {
+		// Comma-separated format: CN=PUKI Issuing CA 2022 EC,OU=puki-admin at ionos.com,O=IONOS SE,C=DE
+		parts = strings.Split(dn, ",")
+	}
+
+	name := &pkix.Name{}
+
+	for _, part := range parts {
+		if strings.Contains(part, "=") {
+			kv := strings.SplitN(part, "=", 2)
+			if len(kv) == 2 {
+				key := strings.TrimSpace(kv[0])
+				value := strings.TrimSpace(kv[1])
+
+				switch key {
+				case "CN":
+					name.CommonName = value
+				case "O":
+					name.Organization = []string{value}
+				case "OU":
+					name.OrganizationalUnit = []string{value}
+				case "C":
+					name.Country = []string{value}
+				case "L":
+					name.Locality = []string{value}
+				case "ST":
+					name.Province = []string{value}
+				}
+			}
+		}
+	}
+
+	return name, nil
+}
+
+// compareDistinguishedNames compares two DN strings by parsing them into pkix.Name structures
+func compareDistinguishedNames(dn1, dn2 string) bool {
+	name1, err1 := parseDistinguishedName(dn1)
+	if err1 != nil {
+		return false
+	}
+
+	name2, err2 := parseDistinguishedName(dn2)
+	if err2 != nil {
+		return false
+	}
+
+	// Compare the canonical string representations
+	return name1.String() == name2.String()
 }
