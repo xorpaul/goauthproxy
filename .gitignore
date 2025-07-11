@@ -3,3 +3,4 @@ goauthproxy
 *.zip
 ssl/
 goauthproxy.yaml
+build/
