@@ -5,8 +5,8 @@ import (
 	"crypto/x509"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -49,6 +49,8 @@ type ConfigSettings struct {
 	RequestsTrustedRootCas []string `yaml:"requests_trusted_root_cas"`
 	Endpoints              map[string]EndpointSettings
 	Hostname               string
+	ProxyNetworkStrings    []string `yaml:"reverse_proxy_networks"`
+	ProxyNetworks          []net.IPNet
 }
 
 type EndpointSettings struct {
@@ -131,7 +133,7 @@ func main() {
 			h.Fatalf("could not find client CA file: " + clientCAFile)
 		} else {
 			// Load CA cert
-			caCert, err := ioutil.ReadFile(clientCAFile)
+			caCert, err := os.ReadFile(clientCAFile)
 			if err != nil {
 				h.Fatalf("Error while reading client certificate CA file " + clientCAFile + " Error: " + err.Error())
 			}

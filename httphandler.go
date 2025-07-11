@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,6 +21,16 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	h "github.com/xorpaul/gohelper"
 )
+
+type ClientCertificate struct {
+	CommonName        string
+	DistinguishedName string
+	Issuer            string
+	Certificate       string
+	NotBefore         string
+	NotAfter          string
+	Verify            string
+}
 
 func httpHandler(w http.ResponseWriter, r *http.Request) {
 	ip := strings.Split(r.RemoteAddr, ":")[0]
@@ -40,7 +51,7 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Log X-Forwarded-For header if present
 		if xForwardedFor := r.Header.Get("X-Forwarded-For"); xForwardedFor != "" {
-			h.Debugf(rid + "Incoming " + method + " request from IP: " + ip + " X-Forwarded-For: " + xForwardedFor)
+			h.Debugf(rid + " Incoming " + method + " request from IP: " + ip + " X-Forwarded-For: " + xForwardedFor)
 		} else {
 			h.Debugf(rid + " Incoming " + method + " request from IP: " + ip)
 		}
@@ -56,11 +67,12 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Log client certificate information if present
-	if len(r.TLS.PeerCertificates) > 0 {
-		h.Debugf(rid + " Client presented " + fmt.Sprintf("%d", len(r.TLS.PeerCertificates)) + " certificate(s)")
-		for i, cert := range r.TLS.PeerCertificates {
-			h.Debugf(rid + " Client certificate " + fmt.Sprintf("%d", i+1) + ": " + cert.Subject.String())
-		}
+	cc, err := getRequestClientCertificate(r)
+	if err != nil {
+		h.Warnf(err.Error())
+	}
+	if cc.DistinguishedName != "" {
+		h.Debugf(rid + " Client certificate presented: " + cc.DistinguishedName)
 	} else {
 		h.Debugf(rid + " No client certificates presented for request to " + r.URL.Path)
 	}
@@ -81,7 +93,7 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 			// Check if this endpoint requires client certificates
 			if len(ep.AllowedDistinguishedNames) > 0 {
 				// This endpoint requires client certificates
-				if len(r.TLS.PeerCertificates) == 0 {
+				if cc.DistinguishedName == "" {
 					h.Debugf(rid + " CRITICAL ERROR: No client certificates presented for protected endpoint " + epName)
 					h.Debugf(rid + " TLS connection details: " + fmt.Sprintf("Version=%d, CipherSuite=%d, ServerName=%s", r.TLS.Version, r.TLS.CipherSuite, r.TLS.ServerName))
 					forbiddenRequestCounter++
@@ -90,7 +102,7 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 				}
 
 				// Verify client certificate for protected endpoint
-				result, err := verifyClientCertificate(rid, ep, r)
+				result, err := verifyClientCertificate(rid, ep, r, cc)
 				if err != nil || !result {
 					respond(w, HttpResult{Code: 403, Body: []byte("No matching client certificate found for endpoint " + uri)}, ep.PromCounters)
 					return
@@ -403,4 +415,64 @@ func createDynamicReqData(ep EndpointSettings, reqUrl string, reqData string) (s
 		i += 1
 	}
 	return reqData, nil
+}
+
+func getRequestClientCertificate(request *http.Request) (*ClientCertificate, error) {
+	// extract the client certificate from the request
+	// if the address belongs to a proxy network, the client certificate headers are returned
+	ipWithoutPortNumber := strings.TrimRight(request.RemoteAddr, "0123456789")
+	ipPotentiallyWithBrackets := strings.TrimRight(ipWithoutPortNumber, ":")
+	ipString := strings.Trim(ipPotentiallyWithBrackets, "[]")
+	ip := net.ParseIP(ipString)
+	if ip == nil {
+		return nil, errors.New("failed to parse the client ip '" + ipString + "' from RemoteAddr " + request.RemoteAddr)
+	}
+	h.Debugf("Client IP: " + ipString)
+	cc := ClientCertificate{}
+	for _, proyxNetwork := range config.ProxyNetworks {
+		h.Debugf("Checking if client IP " + ipString + " is in proxy network " + proyxNetwork.String())
+		if proyxNetwork.Contains(ip) {
+			h.Debugf("Client IP " + ipString + " is in proxy network " + proyxNetwork.String())
+			var err error
+			cc.CommonName, err = filterOptionalRequestHeaders(&request.Header, "X-SSL-Client-CN")
+			if err != nil {
+				return nil, err
+			}
+			cc.DistinguishedName, err = filterOptionalRequestHeaders(&request.Header, "X-SSL-Client-DN")
+			if err != nil {
+				return nil, err
+			}
+			cc.Certificate, err = filterOptionalRequestHeaders(&request.Header, "X-SSL-Client-Cert")
+			if err != nil {
+				return nil, err
+			}
+			cc.Issuer, err = filterOptionalRequestHeaders(&request.Header, "X-SSL-Issuer")
+			if err != nil {
+				return nil, err
+			}
+			cc.Verify, err = filterOptionalRequestHeaders(&request.Header, "X-SSL-Client-Verify")
+			if err != nil {
+				return nil, err
+			}
+			cc.NotBefore, err = filterOptionalRequestHeaders(&request.Header, "X-SSL-Client-NotBefore")
+			if err != nil {
+				return nil, err
+			}
+			cc.NotAfter, err = filterOptionalRequestHeaders(&request.Header, "X-SSL-Client-NotAfter")
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return &cc, nil
+}
+
+func filterOptionalRequestHeaders(requestHeaders *http.Header, optionalHeader string) (string, error) {
+	if len(requestHeaders.Get(optionalHeader)) != 0 {
+		fmt.Println("did find request header " + optionalHeader + " with value " + requestHeaders.Get(optionalHeader))
+		return requestHeaders.Get(optionalHeader), nil
+	} else {
+		fmt.Println("did not find request header " + optionalHeader)
+		return "", nil
+	}
 }

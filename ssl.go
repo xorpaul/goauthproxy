@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,21 @@ import (
 	h "github.com/xorpaul/gohelper"
 	"golang.org/x/crypto/ocsp"
 )
+
+// parsePEMCertificate parses a PEM-encoded certificate and returns the DER bytes
+func parsePEMCertificate(certPEM string) (*x509.Certificate, error) {
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil {
+		return nil, fmt.Errorf("failed to parse PEM block containing the certificate")
+	}
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse certificate: %s", err.Error())
+	}
+
+	return cert, nil
+}
 
 func verifyCertificateOcsp(cert *x509.Certificate, issuer *x509.Certificate) (*ocsp.Response, error) {
 	dn := cert.Subject.String()
@@ -87,83 +103,88 @@ func verifyCertificateOcsp(cert *x509.Certificate, issuer *x509.Certificate) (*o
 
 }
 
-func verifyClientCertificate(rid string, ep EndpointSettings, r *http.Request) (bool, error) {
+func verifyClientCertificate(rid string, ep EndpointSettings, r *http.Request, cc *ClientCertificate) (bool, error) {
 	// First check if we have any TLS connection at all
 	if r.TLS == nil {
 		h.Debugf(rid + " ERROR: No TLS connection found - request should have been rejected at TLS layer")
 		return false, fmt.Errorf("no TLS connection found")
 	}
 
-	// Check if we have any peer certificates
-	if len(r.TLS.PeerCertificates) == 0 {
-		h.Debugf(rid + " ERROR: No client certificates presented for endpoint " + ep.Name)
-		h.Debugf(rid + " TLS connection state: " + fmt.Sprintf("Version=%d, CipherSuite=%d, ServerName=%s", r.TLS.Version, r.TLS.CipherSuite, r.TLS.ServerName))
-		return false, fmt.Errorf("no client certificate presented")
-	}
-
-	h.Debugf(rid + " Found " + fmt.Sprintf("%d", len(r.TLS.PeerCertificates)) + " client certificate(s) for endpoint " + ep.Name)
+	h.Debugf(rid + " Found client certificate for endpoint " + ep.Name + " - DN: " + cc.DistinguishedName)
 
 	if len(ep.AllowedDistinguishedNames) > 0 {
-		h.Debugf(rid + " Checking client certificates against " + fmt.Sprintf("%d", len(ep.AllowedDistinguishedNames)) + " allowed distinguished names for endpoint " + ep.Name)
+		h.Debugf(rid + " Checking client certificate against " + fmt.Sprintf("%d", len(ep.AllowedDistinguishedNames)) + " allowed distinguished names for endpoint " + ep.Name)
 
-		for i, peerCertificate := range r.TLS.PeerCertificates {
-			pcs := peerCertificate.Subject.String()
-			h.Debugf(rid + " Checking client cert " + fmt.Sprintf("%d", i+1) + "/" + fmt.Sprintf("%d", len(r.TLS.PeerCertificates)) + ": " + pcs + " for endpoint " + ep.Name)
+		h.Debugf(rid + " Checking client cert DN: " + cc.DistinguishedName + " for endpoint " + ep.Name)
 
-			for j, cn := range ep.AllowedDistinguishedNames {
-				h.Debugf(rid + " Comparing client cert " + pcs + " against allowed DN " + fmt.Sprintf("%d", j+1) + "/" + fmt.Sprintf("%d", len(ep.AllowedDistinguishedNames)) + ": " + cn)
-				if pcs == cn {
-					h.Debugf(rid + " MATCH: Found matching client cert " + pcs + " for endpoint " + ep.Name)
+		for j, cn := range ep.AllowedDistinguishedNames {
+			h.Debugf(rid + " Comparing client cert " + cc.DistinguishedName + " against allowed DN " + fmt.Sprintf("%d", j+1) + "/" + fmt.Sprintf("%d", len(ep.AllowedDistinguishedNames)) + ": " + cn)
+			if cc.DistinguishedName == cn {
+				h.Debugf(rid + " MATCH: Found matching client cert " + cc.DistinguishedName + " for endpoint " + ep.Name)
 
-					// Check if we have client CA certificates for OCSP verification
-					if len(config.ClientCertCas) == 0 {
-						h.Debugf(rid + " WARNING: No client CA certificates configured for OCSP verification")
-						return true, nil
+				// Check if we have client CA certificates for OCSP verification
+				if len(config.ClientCertCas) == 0 {
+					h.Debugf(rid + " WARNING: No client CA certificates configured for OCSP verification")
+					return true, nil
+				}
+
+				// Find the correct issuer CA certificate for this client certificate
+				clientCertIssuer := cc.Issuer
+				h.Debugf(rid + " Client certificate issuer: " + clientCertIssuer)
+				h.Debugf(rid + " Searching for matching issuer among " + fmt.Sprintf("%d", len(config.ClientCertCas)) + " configured client CA certificate(s)")
+
+				var matchingCA *x509.Certificate = nil
+				var matchingCAIndex int = -1
+
+				for k, clientCAFile := range config.ClientCertCas {
+					clientCAIssuer := clientCAFile.Subject.String()
+					h.Debugf(rid + " Comparing against CA " + fmt.Sprintf("%d", k+1) + "/" + fmt.Sprintf("%d", len(config.ClientCertCas)) + ": " + clientCAIssuer)
+
+					if clientCertIssuer == clientCAIssuer {
+						h.Debugf(rid + " MATCH: Found matching issuer CA " + fmt.Sprintf("%d", k+1) + " for client certificate " + cc.DistinguishedName)
+						matchingCA = clientCAFile
+						matchingCAIndex = k + 1
+						break
 					}
+				}
 
-					// Find the correct issuer CA certificate for this client certificate
-					clientCertIssuer := peerCertificate.Issuer.String()
-					h.Debugf(rid + " Client certificate issuer: " + clientCertIssuer)
-					h.Debugf(rid + " Searching for matching issuer among " + fmt.Sprintf("%d", len(config.ClientCertCas)) + " configured client CA certificate(s)")
+				if matchingCA == nil {
+					h.Debugf(rid + " AUTHORIZATION DENIED: No matching issuer CA found for client certificate " + cc.DistinguishedName)
+					h.Debugf(rid + " Client certificate issuer '" + clientCertIssuer + "' not found in configured client CAs")
+					return false, fmt.Errorf("client certificate issuer not found in configured client CAs")
+				}
 
-					var matchingCA *x509.Certificate = nil
-					var matchingCAIndex int = -1
+				// For OCSP verification, we need to parse the certificate from the header
+				if cc.Certificate != "" {
+					h.Debugf(rid + " Starting OCSP verification with matching issuer CA " + fmt.Sprintf("%d", matchingCAIndex) + " for certificate " + cc.DistinguishedName)
 
-					for k, clientCAFile := range config.ClientCertCas {
-						clientCAIssuer := clientCAFile.Subject.String()
-						h.Debugf(rid + " Comparing against CA " + fmt.Sprintf("%d", k+1) + "/" + fmt.Sprintf("%d", len(config.ClientCertCas)) + ": " + clientCAIssuer)
-
-						if clientCertIssuer == clientCAIssuer {
-							h.Debugf(rid + " MATCH: Found matching issuer CA " + fmt.Sprintf("%d", k+1) + " for client certificate " + pcs)
-							matchingCA = clientCAFile
-							matchingCAIndex = k + 1
-							break
-						}
+					// Parse the certificate from the header (PEM format)
+					certPEM := "-----BEGIN CERTIFICATE-----\n" + cc.Certificate + "\n-----END CERTIFICATE-----"
+					certDER, err := parsePEMCertificate(certPEM)
+					if err != nil {
+						h.Debugf(rid + " Failed to parse certificate from header: " + err.Error())
+						return false, fmt.Errorf("failed to parse certificate from header: %s", err.Error())
 					}
-
-					if matchingCA == nil {
-						h.Debugf(rid + " AUTHORIZATION DENIED: No matching issuer CA found for client certificate " + pcs)
-						h.Debugf(rid + " Client certificate issuer '" + clientCertIssuer + "' not found in configured client CAs")
-						return false, fmt.Errorf("client certificate issuer not found in configured client CAs")
-					}
-
-					h.Debugf(rid + " Starting OCSP verification with matching issuer CA " + fmt.Sprintf("%d", matchingCAIndex) + " for certificate " + pcs)
 
 					// Perform OCSP verification against the specific issuer CA
-					ocspResp, err := verifyCertificateOcsp(peerCertificate, matchingCA)
+					ocspResp, err := verifyCertificateOcsp(certDER, matchingCA)
 					if err != nil {
-						h.Debugf(rid + " OCSP verification failed with matching CA " + fmt.Sprintf("%d", matchingCAIndex) + " for certificate " + pcs + ": " + err.Error())
+						h.Debugf(rid + " OCSP verification failed with matching CA " + fmt.Sprintf("%d", matchingCAIndex) + " for certificate " + cc.DistinguishedName + ": " + err.Error())
 						return false, err
 					}
 
-					h.Debugf(rid + " OCSP verification completed with matching CA " + fmt.Sprintf("%d", matchingCAIndex) + " for certificate " + pcs + " - Status: " + fmt.Sprintf("%d", ocspResp.Status))
+					h.Debugf(rid + " OCSP verification completed with matching CA " + fmt.Sprintf("%d", matchingCAIndex) + " for certificate " + cc.DistinguishedName + " - Status: " + fmt.Sprintf("%d", ocspResp.Status))
 					if ocspResp.Status == 0 {
-						h.Debugf(rid + " AUTHORIZATION GRANTED for certificate " + pcs + " on endpoint " + ep.Name)
+						h.Debugf(rid + " AUTHORIZATION GRANTED for certificate " + cc.DistinguishedName + " on endpoint " + ep.Name)
 						return true, nil
 					} else {
-						h.Debugf(rid + " AUTHORIZATION DENIED: OCSP status not 'Good' for certificate " + pcs + " on endpoint " + ep.Name)
+						h.Debugf(rid + " AUTHORIZATION DENIED: OCSP status not 'Good' for certificate " + cc.DistinguishedName + " on endpoint " + ep.Name)
 						return false, fmt.Errorf("OCSP verification failed: certificate status is not 'Good'")
 					}
+				} else {
+					h.Debugf(rid + " WARNING: No certificate data available for OCSP verification, skipping OCSP check")
+					h.Debugf(rid + " AUTHORIZATION GRANTED for certificate " + cc.DistinguishedName + " on endpoint " + ep.Name)
+					return true, nil
 				}
 			}
 		}

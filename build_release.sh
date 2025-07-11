@@ -21,7 +21,7 @@ fi
 #
 #
 echo "creating git tag v${version}"
-# git tag v${version}
+git tag v${version}
 echo "pushing git tag v${version}"
 git push -f --tags
 git push

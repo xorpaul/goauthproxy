@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/x509"
 	"encoding/pem"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
@@ -126,6 +127,21 @@ func readConfigfile(configFile string) ConfigSettings {
 		config.ClientCertCas = append(config.ClientCertCas, caCertParsed)
 	}
 
+	config.ProxyNetworks = ParseNetworks(config.ProxyNetworkStrings, "in reverse_proxy_networks")
+
 	// fmt.Printf("%+v\n", config)
 	return config
+}
+
+func ParseNetworks(networkStrings []string, contextMessage string) []net.IPNet {
+	var networks []net.IPNet
+	for _, networkString := range networkStrings {
+		_, network, err := net.ParseCIDR(networkString)
+		if err != nil {
+			m := contextMessage + ": failed to parse CIDR '" + networkString + "' " + err.Error()
+			h.Fatalf(m)
+		}
+		networks = append(networks, *network)
+	}
+	return networks
 }
