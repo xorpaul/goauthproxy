@@ -38,8 +38,14 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 		respond(w, HttpResult{Code: 200, Body: []byte(response)}, mainPromCounters)
 		return
 	} else {
-		h.Debugf(rid + " Incoming " + method + " request from IP: " + ip)
+		// Log X-Forwarded-For header if present
+		if xForwardedFor := r.Header.Get("X-Forwarded-For"); xForwardedFor != "" {
+			h.Debugf(rid + "Incoming " + method + " request from IP: " + ip + " X-Forwarded-For: " + xForwardedFor)
+		} else {
+			h.Debugf(rid + " Incoming " + method + " request from IP: " + ip)
+		}
 		h.Debugf(rid + " Request path: " + r.URL.Path)
+
 	}
 
 	// Early check for TLS connection - HTTPS is always required
