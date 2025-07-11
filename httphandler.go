@@ -7,7 +7,8 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"errors"
-	"io/ioutil"
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -41,6 +42,23 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 		h.Debugf(rid + " Request path: " + r.URL.Path)
 	}
 
+	// Early check for TLS connection - HTTPS is always required
+	if r.TLS == nil {
+		h.Debugf(rid + " CRITICAL ERROR: No TLS connection found for request to " + r.URL.Path)
+		respond(w, HttpResult{Code: 400, Body: []byte("HTTPS connection required")}, mainPromCounters)
+		return
+	}
+
+	// Log client certificate information if present
+	if len(r.TLS.PeerCertificates) > 0 {
+		h.Debugf(rid + " Client presented " + fmt.Sprintf("%d", len(r.TLS.PeerCertificates)) + " certificate(s)")
+		for i, cert := range r.TLS.PeerCertificates {
+			h.Debugf(rid + " Client certificate " + fmt.Sprintf("%d", i+1) + ": " + cert.Subject.String())
+		}
+	} else {
+		h.Debugf(rid + " No client certificates presented for request to " + r.URL.Path)
+	}
+
 	uri := r.URL.Path
 	for epName, ep := range endpoints {
 		ep.Name = epName
@@ -53,15 +71,32 @@ func httpHandler(w http.ResponseWriter, r *http.Request) {
 				requestCounter++
 			}
 			h.Debugf(rid + " found endpoint " + epName)
-			result, err := verifyClientCertificate(rid, ep, r)
-			// fmt.Println("verify client result", result)
-			if err != nil || !result {
-				respond(w, HttpResult{Code: 403, Body: []byte("No matching client certificate found for endpoint " + uri)}, ep.PromCounters)
-				return
+
+			// Check if this endpoint requires client certificates
+			if len(ep.AllowedDistinguishedNames) > 0 {
+				// This endpoint requires client certificates
+				if len(r.TLS.PeerCertificates) == 0 {
+					h.Debugf(rid + " CRITICAL ERROR: No client certificates presented for protected endpoint " + epName)
+					h.Debugf(rid + " TLS connection details: " + fmt.Sprintf("Version=%d, CipherSuite=%d, ServerName=%s", r.TLS.Version, r.TLS.CipherSuite, r.TLS.ServerName))
+					forbiddenRequestCounter++
+					respond(w, HttpResult{Code: 496, Body: []byte("SSL Client Certificate Required")}, ep.PromCounters)
+					return
+				}
+
+				// Verify client certificate for protected endpoint
+				result, err := verifyClientCertificate(rid, ep, r)
+				if err != nil || !result {
+					respond(w, HttpResult{Code: 403, Body: []byte("No matching client certificate found for endpoint " + uri)}, ep.PromCounters)
+					return
+				}
 			} else {
-				respond(w, issueRequest(rid, ep, r), ep.PromCounters)
-				return
+				// This is a public endpoint - no client certificate verification required
+				h.Debugf(rid + " endpoint " + epName + " is public (no allowed_distinguishednames configured)")
 			}
+
+			// Proceed with the request
+			respond(w, issueRequest(rid, ep, r), ep.PromCounters)
+			return
 		}
 	}
 	response := rid + " no matching endpoint found for " + uri
@@ -151,7 +186,7 @@ func issueRequest(rid string, ep EndpointSettings, req *http.Request) HttpResult
 				// cached response is still valid
 				// return cached response
 				h.Debugf("returning cached response for " + req.URL.Path + " from " + cacheFile)
-				cacheContent, err := ioutil.ReadFile(cacheFile)
+				cacheContent, err := os.ReadFile(cacheFile)
 				if err != nil {
 					responseBody := "Error while reading cached response: " + err.Error()
 					h.Warnf(responseBody)
@@ -180,7 +215,7 @@ func issueRequest(rid string, ep EndpointSettings, req *http.Request) HttpResult
 		return HttpResult{Code: 503, Body: []byte(responseBody)}
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		responseBody := "Error while reading response body: " + err.Error()
 		h.Warnf(responseBody)
@@ -224,30 +259,40 @@ func respond(w http.ResponseWriter, hr HttpResult, pc map[string]prometheus.Coun
 		// h.Debugf("adding header " + responseHeaderName + " with value: " + responseHeaderValue)
 		w.Header().Set(responseHeaderName, responseHeaderValue)
 	}
-	if hr.Code == 200 {
+
+	// Set the status code BEFORE writing the response body
+	w.WriteHeader(hr.Code)
+
+	switch hr.Code {
+	case 200:
 		mutex.Lock()
 		requestCounter++
 		pc["successful"].Inc()
 		mutex.Unlock()
-	} else if hr.Code == 404 {
+	case 404:
 		mutex.Lock()
 		nonexistingRequestCounter++
 		pc["nonexisting"].Inc()
 		mutex.Unlock()
-	} else if hr.Code == 403 {
+	case 403:
 		mutex.Lock()
 		forbiddenRequestCounter++
 		pc["forbidden"].Inc()
 		mutex.Unlock()
-	} else if hr.Code == 503 {
+	case 496:
+		mutex.Lock()
+		forbiddenRequestCounter++
+		pc["forbidden"].Inc()
+		mutex.Unlock()
+	case 503:
 		mutex.Lock()
 		failedRequestCounter++
 		pc["error"].Inc()
 		mutex.Unlock()
 	}
-	w.Write(hr.Body)
-	w.WriteHeader(hr.Code)
 
+	// Write the response body AFTER setting the status code
+	w.Write(hr.Body)
 }
 
 func setupHttpClient(ep EndpointSettings) *http.Client {
@@ -259,7 +304,7 @@ func setupHttpClient(ep EndpointSettings) *http.Client {
 
 	for _, rootCaFile := range config.RequestsTrustedRootCas {
 		// Read in the cert file
-		cert, err := ioutil.ReadFile(rootCaFile)
+		cert, err := os.ReadFile(rootCaFile)
 		if err != nil {
 			h.Fatalf("Failed to append " + rootCaFile + " to RootCAs Error: " + err.Error())
 		}
