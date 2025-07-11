@@ -3,8 +3,8 @@ package main
 import (
 	"crypto/x509"
 	"encoding/pem"
-	"io/ioutil"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -18,7 +18,7 @@ import (
 // readConfigfile creates the ConfigSettings struct from the g10k config file
 func readConfigfile(configFile string) ConfigSettings {
 	h.Debugf("Trying to read goauthproxy config file: " + configFile)
-	data, err := ioutil.ReadFile(configFile)
+	data, err := os.ReadFile(configFile)
 	if err != nil {
 		h.Fatalf("readConfigfile(): There was an error parsing the config file " + configFile + ": " + err.Error())
 	}
@@ -107,7 +107,7 @@ func readConfigfile(configFile string) ConfigSettings {
 
 	// add and parse optional client CAs
 	for _, clientCAFile := range config.ClientCertCaFiles {
-		caCert, err := ioutil.ReadFile(clientCAFile)
+		caCert, err := os.ReadFile(clientCAFile)
 		if err != nil {
 			h.Fatalf("error while reading CA file " + clientCAFile + " Error: " + err.Error())
 		}
